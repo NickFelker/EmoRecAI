@@ -17,6 +17,7 @@ Last Date Modified: 2/11/2026
 """
 
 #REQUIRED IMPORTS AND LIBRARIES
+from numpy.random import f
 import pandas as pd
 import numpy as np
 import os
@@ -43,6 +44,7 @@ from keras import optimizers
 import matplotlib.pyplot as plt
 from sklearn.model_selection import train_test_split
 import copy
+import random
 
 
 """
@@ -52,7 +54,7 @@ Load the dataset and get relevant info about the dataframe
 """
 #Load facial key points dataset
 # Use a raw string (or normalized path) so backslashes aren't treated as escape sequences
-data_path = r'C:\Users\nick.felker\source\repos\Emotion AI Dataset\data.csv'
+data_path = r'C:\Users\nick.felker\Downloads\Emotion AI Dataset\data.csv'
 data_path = os.path.normpath(data_path)
 facialKey_df = pd.read_csv(data_path)
 
@@ -116,16 +118,24 @@ Start to augment the images for further use
 
 """
 #Create a copy of the dataframe to manipulate
-facialKey_df_copy = copy.copy(facialKey_df)
+facialKey_df_h = copy.copy(facialKey_df)
+facialKey_df_v = copy.copy(facialKey_df)
 
 #Get the columns of the dataframe excluding the 'Image' column
-columns = facialKey_df_copy.columns[:-1]
+columns = facialKey_df_h.columns[:-1]
 
 #Flip the image horizontally across the y axis
-facialKey_df_copy['Image'] = facialKey_df_copy['Image'].apply(lambda x: np.flip(x, axis=1))
+facialKey_df_h['Image'] = facialKey_df_h['Image'].apply(lambda x: np.flip(x, axis=1))
 for i in range(len(columns)):
     if i%2 == 0:
-        facialKey_df_copy[columns[i]] = facialKey_df_copy[columns[i]].apply(lambda x: 96. - float(x))
+        facialKey_df_h[columns[i]] = facialKey_df_h[columns[i]].apply(lambda x: 96. - float(x))
+
+#Flip the image vertically across the x axis
+facialKey_df_v['Image'] = facialKey_df_v['Image'].apply(lambda x: np.flip(x, axis=0))
+for i in range(len(columns)):
+    if i%2 == 1:
+        facialKey_df_v[columns[i]] = facialKey_df_v[columns[i]].apply(lambda x: 96. - float(x))
+
 """
 #Show the orignal image and the flipped image with their corresponding key points to confirm functionality
 plt.imshow(facialKey_df['Image'].iloc[0], cmap='gray')
@@ -138,15 +148,64 @@ plt.title('Original Image')
 plt.axis('off')
 plt.show()
 
+plt.imshow(facialKey_df_h['Image'].iloc[0], cmap='gray')
+for j in range(1, 31, 2):
+    x = facialKey_df_h.iloc[0, j-1]
+    y = facialKey_df_h.iloc[0, j]
+    if np.isfinite(x) and np.isfinite(y):
+        plt.plot(x, y, 'rx')
+plt.title('Horizontally Flipped Image')
+plt.axis('off')
+plt.show()
+"""
+
+#Concat the original dataframe with the flipped dataframe to create an augmented dataset
+facialKey_df_aug = pd.concat([facialKey_df, facialKey_df_h])
+facialKey_df_aug = pd.concat([facialKey_df_aug, facialKey_df_v])
+facialKey_df_aug.shape
+
+#Randomly increase the brightness of the images in the orignal dataframe and concat the new
+#dataframe with the already augmented dataframe to create an larger dataset
+facialKey_df_copy = copy.copy(facialKey_df)
+facialKey_df_copy['Image'] = facialKey_df_copy['Image'].apply(lambda x: np.clip(random.uniform(1.5, 2)*x, 0.0, 255.0))
+facialKey_df_aug = pd.concat([facialKey_df_aug, facialKey_df_copy])
+facialKey_df_aug.shape
+
+"""
+#Show the brightened images to confirm functionality
 plt.imshow(facialKey_df_copy['Image'].iloc[0], cmap='gray')
 for j in range(1, 31, 2):
     x = facialKey_df_copy.iloc[0, j-1]
     y = facialKey_df_copy.iloc[0, j]
     if np.isfinite(x) and np.isfinite(y):
         plt.plot(x, y, 'rx')
-plt.title('Flipped Image')
+plt.title('Brightened Image')
 plt.axis('off')
 plt.show()
 """
+
+"""
+
+Data normalization and splitting into training and testing sets
+
+"""
+#Obtain the value of images from column 31 and normalize the images
+img_series = facialKey_df_aug.iloc[:, 30]
+# Convert Series of (96,96) arrays into a single numpy array of shape (n,96,96)
+img = np.stack(img_series.values).astype('float32')
+# Normalize
+img = img / 255.0
+
+#Create an array of shape (x, 96, 96, 1) to input into the model
+X = np.expand_dims(img, axis=-1)  # shape (n, 96, 96, 1)
+X = X.astype('float32')
+
+#Obtain the x and y coordinates being used for the target (first 30 columns)
+y = facialKey_df_aug.iloc[:, :30].values.astype('float32')
+
+#Split the dataset into training and testing datasets and verify the split is correct
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.1, random_state=42)
+print(X_train.shape)
+print(X_test.shape)
 
 
