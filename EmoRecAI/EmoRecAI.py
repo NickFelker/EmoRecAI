@@ -16,36 +16,39 @@ Last Date Modified: 2/11/2026
 
 """
 
-#REQUIRED IMPORTS AND LIBRARIES
-from numpy.random import f
+# REQUIRED IMPORTS AND LIBRARIES
 import pandas as pd
 import numpy as np
 import os
-import PIL
 import seaborn as sns
 import pickle
-from PIL import *
+from PIL import Image
 import cv2
-import tensorflow as tf
-from tensorflow import keras
-from tensorflow.keras.applications import DenseNet121
-from tensorflow.keras.models import Model, load_model
-from tensorflow.keras.initializers import glorot_uniform
-from tensorflow.keras.utils import plot_model
-from tensorflow.keras.callbacks import ReduceLROnPlateau, EarlyStopping, ModelCheckpoint, LearningRateScheduler
-from IPython.display import display
-from tensorflow.python.keras import *
-from tensorflow.keras.preprocessing.image import ImageDataGenerator
-from tensorflow.keras import layers, optimizers
-from tensorflow.keras.applications.resnet50 import ResNet50
-from tensorflow.keras.layers import *
-from tensorflow.keras import backend as K
-from keras import optimizers
 import matplotlib.pyplot as plt
 from sklearn.model_selection import train_test_split
 import copy
 import random
 
+# TensorFlow/Keras imports - cleaned and organized
+import tensorflow as tf
+from tensorflow import keras
+from tensorflow.keras.applications import DenseNet121, ResNet50
+from tensorflow.keras.models import Model, load_model
+from tensorflow.keras.initializers import glorot_uniform
+from tensorflow.keras.utils import plot_model
+from tensorflow.keras.callbacks import ReduceLROnPlateau, EarlyStopping, ModelCheckpoint, LearningRateScheduler
+from tensorflow.keras.preprocessing.image import ImageDataGenerator
+from tensorflow.keras import layers, optimizers, backend as K
+from tensorflow.keras.layers import (
+    Conv2D, MaxPool2D, MaxPooling2D, BatchNormalization, 
+    Activation, Add, Dense, Flatten, Dropout, GlobalAveragePooling2D, Input
+)
+
+# IPython display (only needed in Jupyter notebooks)
+try:
+    from IPython.display import display
+except ImportError:
+    pass  # Not needed when running as script
 
 """
 
@@ -208,4 +211,113 @@ X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.1, random_
 print(X_train.shape)
 print(X_test.shape)
 
+"""
 
+ResNet model architecture
+
+"""
+def res_block(X, filter, stage):
+
+    #Convolutional block
+    X_copy = X
+
+    f1, f2, f3 = filter
+
+    #Main path
+    X = Conv2D(f1, (1, 1), strides=(1, 1), name='res' + str(stage) + '_conv_a', kernel_initializer=glorot_uniform(seed=0))(X)
+    X = MaxPool2D((2, 2), padding='same')(X)
+    X = BatchNormalization(axis=3, name='bn' + str(stage) + '_conv_a')(X)
+    X = Activation('relu')(X)
+
+    X = Conv2D(f2, (3, 3), strides=(1, 1), padding='same', name='res' + str(stage) + '_conv_b', kernel_initializer=glorot_uniform(seed=0))(X)
+    X = BatchNormalization(axis=3, name='bn' + str(stage) + '_conv_b')(X)
+    X = Activation('relu')(X)
+
+    X = Conv2D(f3, (1, 1), strides=(1, 1), name='res' + str(stage) + '_conv_c', kernel_initializer=glorot_uniform(seed=0))(X)
+    X = BatchNormalization(axis=3, name='bn' + str(stage) + '_conv_c')(X)
+
+    #Shortcut path
+    X_copy = Conv2D(f3, (1, 1), strides=(1, 1), name='res' + str(stage) + '_conv_shortcut', kernel_initializer=glorot_uniform(seed=0))(X_copy)
+    X_copy = MaxPooling2D((2, 2), padding='same')(X_copy)
+    X_copy = BatchNormalization(axis=3, name='bn' + str(stage) + '_conv_shortcut')(X_copy)
+
+    #Add the main path and the shortcut path together
+    X = Add()([X, X_copy])
+    X = Activation('relu')(X)
+
+    #Identity block 1
+    X_copy = X
+
+    #Main path
+    X = Conv2D(f1, (1, 1), strides=(1, 1), name='res' + str(stage) + '_id_1_a', kernel_initializer=glorot_uniform(seed=0))(X)
+    X = BatchNormalization(axis=3, name='bn' + str(stage) + '_id_1_a')(X)
+    X = Activation('relu')(X)
+
+    X = Conv2D(f2, (3, 3), strides=(1, 1), padding='same', name='res' + str(stage) + '_id_1_b', kernel_initializer=glorot_uniform(seed=0))(X)
+    X = BatchNormalization(axis=3, name='bn' + str(stage) + '_id_1_b')(X)
+    X = Activation('relu')(X)
+
+    X = Conv2D(f3, (1, 1), strides=(1, 1), name='res' + str(stage) + '_id_1_c', kernel_initializer=glorot_uniform(seed=0))(X)
+    X = BatchNormalization(axis=3, name='bn' + str(stage) + '_id_1_c')(X)
+    
+    #Add
+    X = Add()([X, X_copy])
+    X = Activation('relu')(X)
+
+    #Identity block 2
+    X_copy = X
+
+    #Main path
+    X = Conv2D(f1, (1, 1), strides=(1, 1), name='res' + str(stage) + '_id_2_a', kernel_initializer=glorot_uniform(seed=0))(X)
+    X = BatchNormalization(axis=3, name='bn' + str(stage) + '_id_2_a')(X)
+    X = Activation('relu')(X)
+
+    X = Conv2D(f2, (3, 3), strides=(1, 1), padding='same', name='res' + str(stage) + '_id_2_b', kernel_initializer=glorot_uniform(seed=0))(X)
+    X = BatchNormalization(axis=3, name='bn' + str(stage) + '_id_2_b')(X)
+    X = Activation('relu')(X)
+
+    X = Conv2D(f3, (1, 1), strides=(1, 1), name='res' + str(stage) + '_id_2_c', kernel_initializer=glorot_uniform(seed=0))(X)
+    X = BatchNormalization(axis=3, name='bn' + str(stage) + '_id_2_c')(X)
+
+    #Add
+    X = Add()([X, X_copy])
+    X = Activation('relu')(X)
+
+    return X
+
+
+#Input tensor shape
+input_shape = (96, 96, 1)
+
+#Input layer
+X_input = Input(input_shape)
+
+#Zero-Padding
+X = layers.ZeroPadding2D((3, 3))(X_input)
+
+#Stage 1
+X = Conv2D(64, (7, 7), strides=(2, 2), name='conv1', kernel_initializer=glorot_uniform(seed=0))(X)
+X = BatchNormalization(axis=3, name='bn_conv1')(X)
+X = Activation('relu')(X)
+X = MaxPool2D((3, 3), strides=(2, 2))(X)
+
+#Stage 2
+X = res_block(X, [64, 64, 256], stage=2)
+
+#Stage 3
+X = res_block(X, [128, 128, 512], stage=3)
+
+#Average Pooling
+X = GlobalAveragePooling2D(name='avg_pool')(X)
+
+#Final layer
+X = Flatten()(X)
+X = Dense(4096, activation='relu')(X)
+X = Dropout(0.2)(X)
+X = Dense(2048, activation='relu')(X)
+X = Dropout(0.1)(X)
+X = Dense(30, activation='relu')(X)
+
+#Model instantiation
+model_1_facialKeyPoints = Model(inputs=X_input, outputs=X)
+model_1_facialKeyPoints.summary()
