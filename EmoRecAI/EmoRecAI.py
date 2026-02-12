@@ -50,6 +50,10 @@ try:
 except ImportError:
     pass  # Not needed when running as script
 
+# Define paths for model outputs (outside project directory)
+MODEL_OUTPUT_DIR = r'C:\Users\nick.felker\Downloads\EmoRecAI_Models'
+os.makedirs(MODEL_OUTPUT_DIR, exist_ok=True)
+
 """
 
 Load the dataset and get relevant info about the dataframe
@@ -324,3 +328,22 @@ X = Dense(30, activation='relu')(X)
 #Model instantiation
 model_1_facialKeyPoints = Model(inputs=X_input, outputs=X)
 model_1_facialKeyPoints.summary()
+
+#ADAM optimizer
+print("Compiling the model...")
+adam = tf.keras.optimizers.Adam(learning_rate=0.0001, beta_1=0.9, beta_2=0.999, amsgrad=False)
+model_1_facialKeyPoints.compile(optimizer=adam, loss='mean_squared_error', metrics=['accuracy'])
+
+#Save the best model with least validation loss
+weights_path = os.path.join(MODEL_OUTPUT_DIR, 'FacialKeyPoints_weights.keras')
+checkpoint = ModelCheckpoint(filepath=weights_path, verbose=1, save_best_only=True)
+history = model_1_facialKeyPoints.fit(X_train, y_train, batch_size=32, epochs=1, validation_split=0.05, callbacks=[checkpoint])
+
+#Save the model architecture and weights to json
+model_json = model_1_facialKeyPoints.to_json()
+model_json_path = os.path.join(MODEL_OUTPUT_DIR, 'FacialKeyPoints-model.json')
+with open(model_json_path, 'w') as json_file:
+    json_file.write(model_json)
+
+print(f"Model training complete and saved to: {MODEL_OUTPUT_DIR}")
+
