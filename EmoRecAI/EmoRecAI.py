@@ -12,7 +12,7 @@ Based on Udemy course "Modern Artificial Intelligence Masterclass" by Dr. Ryan A
 Revised by: Nick Felker
 
 Creation Date: 2/11/2026
-Last Date Modified: 2/11/2026
+Last Date Modified: 2/12/2026
 
 """
 
@@ -306,6 +306,9 @@ X = res_block(X, [64, 64, 256], stage=2)
 
 #Stage 3
 X = res_block(X, [128, 128, 512], stage=3)
+
+#Stage 4
+X = res_block(X, [256, 256, 1024], stage=4)
 
 #Average Pooling
 X = GlobalAveragePooling2D(name='avg_pool')(X)
