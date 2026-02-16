@@ -18,6 +18,7 @@ Last Date Modified: 2/16/2026
 
 # REQUIRED IMPORTS AND LIBRARIES
 from pyexpat import model
+from tkinter import LabelFrame
 import pandas as pd
 import numpy as np
 import os
@@ -58,7 +59,7 @@ weights_path = os.path.join(MODEL_OUTPUT_DIR, 'FacialKeyPoints_weights.keras')
 model_json_path = os.path.join(MODEL_OUTPUT_DIR, 'FacialKeyPoints-model.json')
 
 #Flags to visualize data and train the model - set to 0 to skip visualization and training
-visualize_data = 0
+visualize_data = 1
 train_model = 0
 
 
@@ -403,3 +404,13 @@ def resize(x):
     img = x.reshape(48, 48)
     return cv2.resize(img, dsize=(96, 96), interpolation=cv2.INTER_CUBIC)
 
+#Convert the pixel values to array format and resize the images
+facialExp_df[' pixels'] = facialExp_df[' pixels'].apply(lambda x: stoa(x))
+facialExp_df[' pixels'] = facialExp_df[' pixels'].apply(lambda x: resize(x))
+facialExp_df.head()
+
+#Check the shape of the dataframe and null values
+facialExp_df.shape
+facialExp_df.isnull().sum()
+
+label_to_txt = {0: 'Angry', 1: 'Disgust', 2: 'Sad', 3: 'Happiness', 4: 'Surprise'}
