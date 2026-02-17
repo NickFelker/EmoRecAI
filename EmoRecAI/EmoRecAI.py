@@ -58,7 +58,7 @@ os.makedirs(MODEL_OUTPUT_DIR, exist_ok=True)
 weights_path = os.path.join(MODEL_OUTPUT_DIR, 'FacialKeyPoints_weights.keras')
 model_json_path = os.path.join(MODEL_OUTPUT_DIR, 'FacialKeyPoints-model.json')
 
-#Flags to visualize data and train the model - set to 0 to skip visualization and training
+#Flags to visualize data and train the model - set to 0 to skip visualization or training
 visualize_data = 1
 train_model = 0
 
@@ -408,9 +408,17 @@ def resize(x):
 facialExp_df[' pixels'] = facialExp_df[' pixels'].apply(lambda x: stoa(x))
 facialExp_df[' pixels'] = facialExp_df[' pixels'].apply(lambda x: resize(x))
 facialExp_df.head()
+facialExp_df.info()
 
 #Check the shape of the dataframe and null values
 facialExp_df.shape
 facialExp_df.isnull().sum()
 
 label_to_txt = {0: 'Angry', 1: 'Disgust', 2: 'Sad', 3: 'Happiness', 4: 'Surprise'}
+
+#Check the first image for any distortions
+if visualize_data == 1:
+    #Show the resized image to confirm functionality
+    plt.imshow(facialExp_df[' pixels'].iloc[0], cmap='gray')
+    plt.show()
+
