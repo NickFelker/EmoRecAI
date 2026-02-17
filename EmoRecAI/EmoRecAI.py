@@ -414,11 +414,20 @@ facialExp_df.info()
 facialExp_df.shape
 facialExp_df.isnull().sum()
 
+#Labels for the facial expression dataset
 label_to_txt = {0: 'Angry', 1: 'Disgust', 2: 'Sad', 3: 'Happiness', 4: 'Surprise'}
+emo = [0, 1, 2, 3, 4]
 
-#Check the first image for any distortions
+#Visualize the first image of each emotion to verify functionality
 if visualize_data == 1:
-    #Show the resized image to confirm functionality
-    plt.imshow(facialExp_df[' pixels'].iloc[0], cmap='gray')
-    plt.show()
+    for i in emo:
+        data = facialExp_df[facialExp_df['emotion'] == i][:1]
+        img = data[' pixels'].item()
+        img = img.reshape(96, 96)
+        plt.imshow(img, cmap='gray')
+        plt.title(label_to_txt[i])
+        plt.axis('off')
+        plt.show()
+
+
 
