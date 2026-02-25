@@ -29,13 +29,18 @@ import pickle
 from PIL import Image
 import cv2
 import matplotlib.pyplot as plt
-from sklearn.model_selection import train_test_split
 import copy
 import random
+import json
+import shutil
+import subprocess
+import time
+import requests
 
-# TensorFlow/Keras imports - cleaned and organized
+# TensorFlow/Keras/Sklearn imports - cleaned and organized
 import tensorflow as tf
 from tensorflow import keras
+import tensorflow.keras.backend as K
 from tensorflow.keras.applications import DenseNet121, ResNet50
 from tensorflow.keras.models import Model, load_model
 from tensorflow.keras.initializers import glorot_uniform
@@ -49,6 +54,8 @@ from tensorflow.keras.layers import (
 )
 from keras.utils import to_categorical
 from sklearn.model_selection import train_test_split
+from sklearn.metrics import confusion_matrix, classification_report
+from sklearn.utils.class_weight import compute_class_weight
 
 # IPython display (only needed in Jupyter notebooks)
 try:
@@ -66,7 +73,7 @@ emo_model_json_path = os.path.join(MODEL_OUTPUT_DIR, 'FacialExpression-model.jso
 
 #Flags to visualize data and train the models - set to 0 to skip visualization or training
 visualize_data = 0
-train_keypoint_model = 0
+train_keypoint_model = 1
 train_emo_model = 1
 
 
@@ -253,7 +260,7 @@ def res_block(X, filter, stage):
 
     #Main path
     X = Conv2D(f1, (1, 1), strides=(1, 1), name='res' + str(stage) + '_conv_a', kernel_initializer=glorot_uniform(seed=0))(X)
-    X = MaxPool2D((2, 2), padding='same')(X)
+    X = MaxPool2D((2, 2))(X)
     X = BatchNormalization(axis=3, name='bn' + str(stage) + '_conv_a')(X)
     X = Activation('relu')(X)
 
@@ -266,7 +273,7 @@ def res_block(X, filter, stage):
 
     #Shortcut path
     X_copy = Conv2D(f3, (1, 1), strides=(1, 1), name='res' + str(stage) + '_conv_shortcut', kernel_initializer=glorot_uniform(seed=0))(X_copy)
-    X_copy = MaxPooling2D((2, 2), padding='same')(X_copy)
+    X_copy = MaxPooling2D((2, 2))(X_copy)
     X_copy = BatchNormalization(axis=3, name='bn' + str(stage) + '_conv_shortcut')(X_copy)
 
     #Add the main path and the shortcut path together
@@ -335,16 +342,16 @@ X = Activation('relu')(X)
 X = MaxPool2D((3, 3), strides=(2, 2))(X)
 
 #Stage 2
-X = res_block(X, [32, 32, 128], stage=2)
+#X = res_block(X, [32, 32, 128], stage=2)
 
 #Stage 3
-X = res_block(X, [64, 64, 256], stage=3)
+X = res_block(X, [64, 64, 256], stage=2)
 
 #Stage 4
-X = res_block(X, [128, 128, 512], stage=4)
+X = res_block(X, [128, 128, 512], stage=3)
 
 #Stage 5
-X = res_block(X, [256, 256, 1024], stage=5)
+#X = res_block(X, [256, 256, 1024], stage=5)
 
 #Average Pooling
 X = GlobalAveragePooling2D(name='avg_pool')(X)
@@ -355,11 +362,6 @@ X = Dense(4096, activation='relu')(X)
 X = Dropout(0.2)(X)
 X = Dense(2048, activation='relu')(X)
 X = Dropout(0.1)(X)
-X = Dense(1024, activation='relu')(X)
-X = BatchNormalization()(X)
-X = Dropout(0.2)(X)
-X = Dense(512, activation='relu')(X)
-X = Dropout(0.1)(X)
 X = Dense(30, activation='relu')(X)
 
 #Model instantiation
@@ -369,12 +371,12 @@ model_1_facialKeyPoints.summary()
 if train_keypoint_model == 1:
     #ADAM optimizer
     print("Compiling the model...")
-    adam = tf.keras.optimizers.Adam(learning_rate=0.001, beta_1=0.9, beta_2=0.999, amsgrad=False)
+    adam = tf.keras.optimizers.Adam(learning_rate=0.0001, beta_1=0.9, beta_2=0.999, amsgrad=False)
     model_1_facialKeyPoints.compile(optimizer=adam, loss='mean_squared_error', metrics=['accuracy'])
 
     #Save the best model with least validation loss
-    checkpoint = ModelCheckpoint(filepath=weights_path, verbose=1, save_best_only=True)
-    history = model_1_facialKeyPoints.fit(X_train, y_train, batch_size=32, epochs=8, validation_split=0.05, callbacks=[checkpoint])
+    checkpoint = ModelCheckpoint(filepath=weights_path, monitor="val_accuracy", verbose=1, save_best_only=True)
+    history = model_1_facialKeyPoints.fit(X_train, y_train, batch_size=32, epochs=10, validation_split=0.1, callbacks=[checkpoint])
 
     #Save the model architecture and weights to json
     model_json = model_1_facialKeyPoints.to_json()
@@ -402,7 +404,7 @@ with open(model_json_path, 'r') as json_file:
 
 model_1_facialKeyPoints = tf.keras.models.model_from_json(json_savedModel)
 model_1_facialKeyPoints.load_weights(weights_path)
-adam = tf.keras.optimizers.Adam(learning_rate=0.001, beta_1=0.9, beta_2=0.999, amsgrad=False)
+adam = tf.keras.optimizers.Adam(learning_rate=0.0001, beta_1=0.9, beta_2=0.999, amsgrad=False)
 model_1_facialKeyPoints.compile(optimizer=adam, loss='mean_squared_error', metrics=['accuracy'])
 
 #Evaluate the model on the test set
@@ -481,85 +483,147 @@ X_val, X_test, y_val, y_test = train_test_split(X_test, y_test, test_size=0.5, s
 print(X_val.shape, y_val.shape)
 
 #Image preprocessing and augmentation
-X_train = X_train/255.0
-X_val = X_val/255.0
-X_test = X_test/255.0
+X_train = X_train/255
+X_val = X_val/255
+X_test = X_test/255
 
 train_datagen = ImageDataGenerator(
-    rotation_range=15,
-    width_shift_range=0.1,
-    height_shift_range=0.1,
-    shear_range=0.1,
-    zoom_range=0.1,
-    horizontal_flip=True,
-    fill_mode='nearest')
+    rotation_range = 15,
+    width_shift_range = 0.1,
+    height_shift_range = 0.1,
+    shear_range = 0.1,
+    zoom_range = 0.1,
+    horizontal_flip = True,
+    vertical_flip = True,
+    brightness_range = [1.1, 1.5],
+    fill_mode = "nearest")
 
 
 """
 
-Build and train deep learning model for facial expression recognition
+Build and train deep learning model for facial expression recognition using ResNet50 Transfer Learning
 
 """
-input_shape = (96, 96, 1)
+# Get class distribution and print it for debugging
+y_train_labels = np.argmax(y_train, axis=1)
+unique, counts = np.unique(y_train_labels, return_counts=True)
+print(f"Class distribution: {dict(zip(unique, counts))}")
 
-#Input layer
+# Don't use class weights for transfer learning - let the model learn naturally
+print("Using ResNet50 Transfer Learning for superior performance")
+
+# Convert grayscale to RGB for pretrained models
+print("Converting grayscale images to RGB...")
+X_train_rgb = np.repeat(X_train, 3, axis=-1)
+X_val_rgb = np.repeat(X_val, 3, axis=-1)
+X_test_rgb = np.repeat(X_test, 3, axis=-1)
+
+# Resize to 224x224 for optimal ResNet50 performance
+def resize_for_resnet(X):
+    print(f"Resizing {X.shape[0]} images to 224x224...")
+    X_resized = np.zeros((X.shape[0], 224, 224, 3), dtype=np.float32)
+    for i in range(X.shape[0]):
+        # Resize each channel
+        X_resized[i] = cv2.resize(X[i], (224, 224))
+    return X_resized
+
+print("Resizing images for ResNet50...")
+X_train_resized = resize_for_resnet(X_train_rgb)
+X_val_resized = resize_for_resnet(X_val_rgb)
+X_test_resized = resize_for_resnet(X_test_rgb)
+
+input_shape = (224, 224, 3)
+
+# Use pretrained ResNet50 as base model
+print("Loading pretrained ResNet50...")
+base_model = ResNet50(weights='imagenet', include_top=False, input_shape=input_shape)
+
+# Freeze the base model initially
+base_model.trainable = False
+
+# Build the emotion classification model
 X_input = Input(input_shape)
-
-#Zero-Padding
-X = layers.ZeroPadding2D((3, 3))(X_input)
-
-#Stage 1
-X = Conv2D(64, (7, 7), strides=(2, 2), name='conv1', kernel_initializer=glorot_uniform(seed=0))(X)
-X = BatchNormalization(axis=3, name='bn_conv1')(X)
-X = Activation('relu')(X)
-X = MaxPool2D((3, 3), strides=(2, 2))(X)
-
-#Stage 2
-X = res_block(X, [32, 32, 128], stage=2)
-
-#Stage 3
-X = res_block(X, [64, 64, 256], stage=3)
-
-#Stage 4
-X = res_block(X, [128, 128, 512], stage=4)
-
-#Stage 5
-X = res_block(X, [256, 256, 1024], stage=5)
-
-#Average Pooling
-X = GlobalAveragePooling2D(name='avg_pool')(X)
-
-#Final layer
-X = Flatten()(X)
-X = Dense(5, activation='softmax', name='Dense_final', kernel_initializer= glorot_uniform(seed=0))(X)
+X = base_model(X_input, training=False)
+X = GlobalAveragePooling2D()(X)
+X = Dense(512, activation='relu')(X)
+X = Dropout(0.2)(X)
+X = Dense(256, activation='relu')(X)
+X = Dropout(0.1)(X)
+X = Dense(5, activation='softmax', name='emotion_output')(X)
 
 #Model instantiation
-model_2_emo = Model(inputs=X_input, outputs=X, name='Resnet18')
+model_2_emo = Model(inputs=X_input, outputs=X, name='ResNet50_Emotion')
 model_2_emo.summary()
 
 #Train the model
 if train_emo_model == 1:
-    print("Compiling the model...")
-    model_2_emo.compile(optimizer=adam, loss='categorical_crossentropy', metrics=['accuracy'])
+    print("Starting ResNet50 Transfer Learning Training...")
+    
+    # Phase 1: Train only the classifier head
+    print("Phase 1: Training classifier head with frozen ResNet50...")
+    model_2_emo.compile(
+        optimizer=tf.keras.optimizers.Adam(learning_rate=0.001), 
+        loss='categorical_crossentropy', 
+        metrics=['accuracy']
+    )
 
-    #Early stopping
-    early_stop = EarlyStopping(monitor='val_loss', mode='min', verbose=1, patience=25)
+    #Early stopping with patience
+    early_stop = EarlyStopping(monitor='val_accuracy', mode='max', verbose=1, patience=10, restore_best_weights=True)
 
-    #Save the best model with least validation loss
-    checkpoint = ModelCheckpoint(filepath=emo_weights_path, verbose=1, save_best_only=True)
+    #Learning rate reduction
+    reduce_lr = ReduceLROnPlateau(monitor='val_accuracy', mode='max', factor=0.5, patience=5, min_lr=1e-7, verbose=1)
 
-    #History callback
-    history = model_2_emo.fit(train_datagen.flow(X_train, y_train, batch_size=128), 
-                              validation_data=(X_val, y_val), 
-                              epochs=3, 
-                              callbacks=[checkpoint, early_stop])
+    #Save the best model with highest validation accuracy
+    checkpoint = ModelCheckpoint(filepath=emo_weights_path, monitor='val_accuracy', verbose=1, save_best_only=True, mode='max')
+
+    # Updated data generator for better augmentation
+    train_datagen = ImageDataGenerator(
+        rotation_range=5,      # Reduce from 10
+        width_shift_range=0.02, # Reduce from 0.05
+        height_shift_range=0.02,
+        zoom_range=0.02,
+        horizontal_flip=True,
+        brightness_range=[0.95, 1.05],  # More conservative
+        # Remove shear - faces shouldn't be sheared
+    )
+
+    #History callback without class weights for better overall performance
+    history_emo_phase1 = model_2_emo.fit(
+        train_datagen.flow(X_train_resized, y_train, batch_size=32), 
+        validation_data=(X_val_resized, y_val), 
+        epochs=15, 
+        callbacks=[checkpoint, early_stop, reduce_lr]
+    )
+    
+    # Phase 2: Fine-tune the last few layers of ResNet50
+    print("Phase 2: Fine-tuning ResNet50 layers...")
+    base_model.trainable = True
+    
+    # Freeze early layers, only train the last few layers
+    for layer in base_model.layers[:-20]:
+        layer.trainable = False
+    
+    # Lower learning rate for fine-tuning
+    model_2_emo.compile(
+        optimizer=tf.keras.optimizers.Adam(learning_rate=0.0001), 
+        loss='categorical_crossentropy', 
+        metrics=['accuracy']
+    )
+    
+    # Continue training with fine-tuning
+    history_emo_phase2 = model_2_emo.fit(
+        train_datagen.flow(X_train_resized, y_train, batch_size=32), 
+        validation_data=(X_val_resized, y_val), 
+        epochs=10, 
+        callbacks=[checkpoint, early_stop, reduce_lr]
+    )
 
     #Save the model
     emo_model_json = model_2_emo.to_json()
     with open(emo_model_json_path, 'w') as json_file:
         json_file.write(emo_model_json)
 
-    print(f"Model training complete and saved to: {MODEL_OUTPUT_DIR}")
+    print(f"ResNet50 Transfer Learning model training complete and saved to: {MODEL_OUTPUT_DIR}")
 
 #Load the best model
 with open(emo_model_json_path, 'r') as json_file:
@@ -567,8 +631,483 @@ with open(emo_model_json_path, 'r') as json_file:
 
 model_2_emo = tf.keras.models.model_from_json(emo_json_savedModel)
 model_2_emo.load_weights(emo_weights_path)
-model_2_emo.compile(optimizer=adam, loss='mean_squared_error', metrics=['accuracy'])
+model_2_emo.compile(optimizer="Adam", loss='categorical_crossentropy', metrics=['accuracy'])
 
-#Evaluate the model on the test set
-result = model_2_emo.evaluate(X_test, y_test)
-print(f"Test Loss: {result[0]}, Test Accuracy: {result[1]}")
+#Evaluate the model on the test set with resized images
+score = model_2_emo.evaluate(X_test_resized, y_test)
+print('ResNet50 Transfer Learning Test Accuracy: {:.2%}'.format(score[1]))
+
+
+# Update prediction arrays to use resized images for evaluation
+predicted_classes = np.argmax(model_2_emo.predict(X_test_resized), axis=-1)   
+y_true = np.argmax(y_test, axis=-1)
+
+cm = confusion_matrix(y_true, predicted_classes)
+plt.figure(figsize=(10, 10))
+sns.heatmap(cm, annot=True, cbar=False)
+plt.show()
+
+L = 5
+W = 5
+
+fig, axes = plt.subplots(L, W, figsize=(24, 24))
+axes = axes.ravel()
+
+for i in np.arange(0, L * W):
+    axes[i].imshow(X_test[i].squeeze(), cmap='gray')
+    axes[i].set_title(f"True: {label_to_txt[y_true[i]]}\nPredicted: {label_to_txt[predicted_classes[i]]}")
+    axes[i].axis('off')
+
+plt.subplots_adjust(wspace=1)
+plt.show()
+
+print(classification_report(y_true, predicted_classes))
+
+
+"""
+
+Prediction function to incorporate both models for facial key point detection and facial expression recognition
+
+"""
+def predict(X_test):
+    #Predict facial keypoints (still uses original 96x96 images)
+    df_predict = model_1_facialKeyPoints.predict(X_test)
+
+    # Convert and resize images for emotion prediction with ResNet50
+    X_test_rgb = np.repeat(X_test, 3, axis=-1)
+    X_test_resized = np.zeros((X_test.shape[0], 224, 224, 3), dtype=np.float32)
+    for i in range(X_test.shape[0]):
+        X_test_resized[i] = cv2.resize(X_test_rgb[i], (224, 224))
+    
+    #Predict facial expression with ResNet50
+    df_emo_predict = np.argmax(model_2_emo.predict(X_test_resized), axis=-1)   
+
+    #Reshaping array from (856,) to (856, 1) for concatenation
+    df_emo_predict = np.expand_dims(df_emo_predict, axis=-1)
+
+    #Converting the predicted key points and emotions into a dataframe
+    df_predict = pd.DataFrame(df_predict, columns=columns)
+
+    #Adding emotion predictions to the dataframe
+    df_predict['emotion'] = df_emo_predict
+
+    return df_predict
+
+#Example usage of the prediction function
+df_predict = predict(X_test)
+df_predict.head()
+
+# Plotting the test images and their predicted keypoints and emotions
+fig, axes = plt.subplots(4, 4, figsize = (24, 24))
+axes = axes.ravel()
+
+for i in range(16):
+
+    axes[i].imshow(X_test[i].squeeze(),cmap='gray')
+    axes[i].set_title(f"ResNet50 Predicted Emotion: {label_to_txt[df_predict.loc[i]['emotion']]}")
+    axes[i].axis('off')
+    for j in range(1,31,2):
+            axes[i].plot(df_predict.loc[i][j-1], df_predict.loc[i][j], 'rx')
+
+
+"""
+
+Deploy the model - Currently unused and inoperable due to environment limitations
+
+"""
+"""
+def deploy(directory, model):
+    MODEL_DIR = directory
+    version = 1
+
+    export_path = os.path.join(MODEL_DIR, str(version))
+    print(f"export_path = {export_path}")
+
+    if os.path.isdir(export_path):
+        print('Already saved a model, cleaning up the folder')
+        shutil.rmtree(export_path)
+
+    tf.saved_model.save(model, export_path)
+
+    os.environ['MODEL_DIR'] = MODEL_DIR
+    return MODEL_DIR
+
+def setup_tensorflow_serving():
+    """Setup TensorFlow Serving (Linux/Docker only)"""
+    try:
+        # Add tensorflow serving apt repository and update the package list
+        subprocess.run([
+            'bash', '-c',
+            'echo "deb http://storage.googleapis.com/tensorflow-serving-apt stable tensorflow-model-server tensorflow-model-server-universal" | tee /etc/apt/sources.list.d/tensorflow-serving.list'
+        ], check=True)
+        
+        subprocess.run([
+            'bash', '-c',
+            'curl https://storage.googleapis.com/tensorflow-serving-apt/tensorflow-serving.release.pub.gpg | apt-key add -'
+        ], check=True)
+        
+        # Update package list
+        subprocess.run(['apt', 'update'], check=True)
+        
+        # Install tensorflow model server
+        subprocess.run(['apt-get', 'install', '-y', 'tensorflow-model-server'], check=True)
+        
+        print("TensorFlow Serving installed successfully!")
+        return True
+        
+    except subprocess.CalledProcessError as e:
+        print(f"Error setting up TensorFlow Serving: {e}")
+        print("Note: This setup requires Linux/Ubuntu environment with sudo privileges")
+        return False
+    except FileNotFoundError:
+        print("Error: This setup requires a Linux environment (apt package manager not found)")
+        return False
+
+def start_tensorflow_server(port, model_name, model_base_path, log_file="server.log"):
+    """Start TensorFlow Model Server"""
+    try:
+        cmd = [
+            'nohup', 'tensorflow_model_server',
+            f'--rest_api_port={port}',
+            f'--model_name={model_name}',
+            f'--model_base_path={model_base_path}'
+        ]
+        
+        with open(log_file, 'w') as f:
+            process = subprocess.Popen(cmd, stdout=f, stderr=subprocess.STDOUT)
+        
+        print(f"Started TensorFlow Model Server on port {port}")
+        print(f"Model: {model_name}")
+        print(f"Logs written to: {log_file}")
+        
+        # Wait a moment for server to start
+        time.sleep(3)
+        
+        # Show server log
+        try:
+            with open(log_file, 'r') as f:
+                print("Server log:")
+                print(f.read())
+        except FileNotFoundError:
+            print("Log file not found yet")
+            
+        return process
+        
+    except FileNotFoundError:
+        print("Error: tensorflow_model_server not found. Please install TensorFlow Serving first.")
+        return None
+    except Exception as e:
+        print(f"Error starting server: {e}")
+        return None
+
+# Deploy models (only if TensorFlow Serving setup is successful)
+if setup_tensorflow_serving():
+    print("\n" + "="*50)
+    print("DEPLOYING MODELS")
+    print("="*50)
+    
+    # Deploy keypoint model
+    model_dir1 = deploy('/tmp/model_keypoint', model_1_facialKeyPoints)
+    server1 = start_tensorflow_server(
+        port=4500,
+        model_name='keypoint_model',
+        model_base_path=model_dir1,
+        log_file='keypoint_server.log'
+    )
+    
+    print("\n" + "-"*30)
+    
+    # Deploy emotion model  
+    model_dir2 = deploy('/tmp/model_emotion', model_2_emo)
+    server2 = start_tensorflow_server(
+        port=4000,
+        model_name='emotion_model', 
+        model_base_path=model_dir2,
+        log_file='emotion_server.log'
+    )
+    
+    print("\n" + "="*50)
+    print("DEPLOYMENT COMPLETE")
+    print("="*50)
+    print("Keypoint Model API: http://localhost:4500/v1/models/keypoint_model")
+    print("Emotion Model API: http://localhost:4000/v1/models/emotion_model")
+    
+else:
+    print("\n" + "="*50)
+    print("ALTERNATIVE DEPLOYMENT - SAVING MODELS ONLY")
+    print("="*50)
+    
+    # Save models in SavedModel format for manual deployment
+    keypoint_dir = deploy(os.path.join(MODEL_OUTPUT_DIR, 'keypoint_savedmodel'), model_1_facialKeyPoints)
+    emotion_dir = deploy(os.path.join(MODEL_OUTPUT_DIR, 'emotion_savedmodel'), model_2_emo)
+    
+    print(f"Models saved to:")
+    print(f"Keypoint model: {keypoint_dir}")
+    print(f"Emotion model: {emotion_dir}")
+    print("\nTo deploy with TensorFlow Serving later, use:")
+    print(f"tensorflow_model_server --rest_api_port=4500 --model_name=keypoint_model --model_base_path={keypoint_dir}")
+    print(f"tensorflow_model_server --rest_api_port=4000 --model_name=emotion_model --model_base_path={emotion_dir}")
+
+
+data = json.dumps({"signature_name": "serving_default", "instances": X_test[0:3].tolist()})
+print('Data: {} ... {}'.format(data[:50], data[len(data)-52:]))
+
+# Function to make predictions from deployed models
+def response(data):
+    headers = {"content-type": "application/json"}
+    
+    # Get keypoint predictions
+    json_response = requests.post('http://localhost:4500/v1/models/keypoint_model/versions/1:predict', data=data, headers=headers, verify=False)
+    df_predict = json.loads(json_response.text)['predictions']
+    
+    # Convert data for ResNet50 emotion model (needs RGB 224x224 images)
+    instances = json.loads(data)['instances']
+    instances_array = np.array(instances)
+    
+    # Convert to RGB and resize for ResNet50
+    instances_rgb = np.repeat(instances_array, 3, axis=-1)
+    instances_resized = np.zeros((len(instances), 224, 224, 3), dtype=np.float32)
+    for i in range(len(instances)):
+        instances_resized[i] = cv2.resize(instances_rgb[i], (224, 224))
+    
+    # Prepare data for ResNet50 emotion model
+    resnet_data = json.dumps({"signature_name": "serving_default", "instances": instances_resized.tolist()})
+    
+    # Get emotion predictions
+    json_response = requests.post('http://localhost:4000/v1/models/emotion_model/versions/1:predict', data=resnet_data, headers=headers, verify=False)
+    df_emotion = np.argmax(json.loads(json_response.text)['predictions'], axis=1)
+    
+    # Reshaping array from (n,) to (n,1)
+    df_emotion = np.expand_dims(df_emotion, axis=1)
+
+    # Converting the predictions into a dataframe
+    df_predict = pd.DataFrame(df_predict, columns=columns)
+
+    # Adding emotion into the predicted dataframe
+    df_predict['emotion'] = df_emotion
+
+    return df_predict
+
+# Update data preparation for ResNet50
+X_test_sample_rgb = np.repeat(X_test[0:3], 3, axis=-1)
+X_test_sample_resized = np.zeros((3, 224, 224, 3), dtype=np.float32)
+for i in range(3):
+    X_test_sample_resized[i] = cv2.resize(X_test_sample_rgb[i], (224, 224))
+
+data = json.dumps({"signature_name": "serving_default", "instances": X_test[0:3].tolist()})
+print('Data: {} ... {}'.format(data[:50], data[len(data)-52:]))
+
+df_predict = response(data)
+
+# Plotting the test images and their predicted keypoints and emotions
+fig, axes = plt.subplots(3, 1, figsize = (24, 24))
+axes = axes.ravel()
+
+for i in range(3):
+    axes[i].imshow(X_test[i].squeeze(),cmap='gray')
+    axes[i].set_title('ResNet50 Prediction = {}'.format(label_to_txt[df_predict['emotion'][i]]))
+    axes[i].axis('off')
+    for j in range(1,31,2):
+            axes[i].plot(df_predict.loc[i][j-1], df_predict.loc[i][j], 'rx')
+
+
+"""
+
+Deploy the model
+
+"""
+def deploy(directory, model):
+    MODEL_DIR = directory
+    version = 1
+
+    export_path = os.path.join(MODEL_DIR, str(version))
+    print(f"export_path = {export_path}")
+
+    if os.path.isdir(export_path):
+        print('Already saved a model, cleaning up the folder')
+        shutil.rmtree(export_path)
+
+    tf.saved_model.save(model, export_path)
+
+    os.environ['MODEL_DIR'] = MODEL_DIR
+    return MODEL_DIR
+
+def setup_tensorflow_serving():
+    """Setup TensorFlow Serving (Linux/Docker only)"""
+    try:
+        # Add tensorflow serving apt repository and update the package list
+        subprocess.run([
+            'bash', '-c',
+            'echo "deb http://storage.googleapis.com/tensorflow-serving-apt stable tensorflow-model-server tensorflow-model-server-universal" | tee /etc/apt/sources.list.d/tensorflow-serving.list'
+        ], check=True)
+        
+        subprocess.run([
+            'bash', '-c',
+            'curl https://storage.googleapis.com/tensorflow-serving-apt/tensorflow-serving.release.pub.gpg | apt-key add -'
+        ], check=True)
+        
+        # Update package list
+        subprocess.run(['apt', 'update'], check=True)
+        
+        # Install tensorflow model server
+        subprocess.run(['apt-get', 'install', '-y', 'tensorflow-model-server'], check=True)
+        
+        print("TensorFlow Serving installed successfully!")
+        return True
+        
+    except subprocess.CalledProcessError as e:
+        print(f"Error setting up TensorFlow Serving: {e}")
+        print("Note: This setup requires Linux/Ubuntu environment with sudo privileges")
+        return False
+    except FileNotFoundError:
+        print("Error: This setup requires a Linux environment (apt package manager not found)")
+        return False
+
+def start_tensorflow_server(port, model_name, model_base_path, log_file="server.log"):
+    """Start TensorFlow Model Server"""
+    try:
+        cmd = [
+            'nohup', 'tensorflow_model_server',
+            f'--rest_api_port={port}',
+            f'--model_name={model_name}',
+            f'--model_base_path={model_base_path}'
+        ]
+        
+        with open(log_file, 'w') as f:
+            process = subprocess.Popen(cmd, stdout=f, stderr=subprocess.STDOUT)
+        
+        print(f"Started TensorFlow Model Server on port {port}")
+        print(f"Model: {model_name}")
+        print(f"Logs written to: {log_file}")
+        
+        # Wait a moment for server to start
+        time.sleep(3)
+        
+        # Show server log
+        try:
+            with open(log_file, 'r') as f:
+                print("Server log:")
+                print(f.read())
+        except FileNotFoundError:
+            print("Log file not found yet")
+            
+        return process
+        
+    except FileNotFoundError:
+        print("Error: tensorflow_model_server not found. Please install TensorFlow Serving first.")
+        return None
+    except Exception as e:
+        print(f"Error starting server: {e}")
+        return None
+
+# Deploy models (only if TensorFlow Serving setup is successful)
+if setup_tensorflow_serving():
+    print("\n" + "="*50)
+    print("DEPLOYING MODELS")
+    print("="*50)
+    
+    # Deploy keypoint model
+    model_dir1 = deploy('/tmp/model_keypoint', model_1_facialKeyPoints)
+    server1 = start_tensorflow_server(
+        port=4500,
+        model_name='keypoint_model',
+        model_base_path=model_dir1,
+        log_file='keypoint_server.log'
+    )
+    
+    print("\n" + "-"*30)
+    
+    # Deploy emotion model  
+    model_dir2 = deploy('/tmp/model_emotion', model_2_emo)
+    server2 = start_tensorflow_server(
+        port=4000,
+        model_name='emotion_model', 
+        model_base_path=model_dir2,
+        log_file='emotion_server.log'
+    )
+    
+    print("\n" + "="*50)
+    print("DEPLOYMENT COMPLETE")
+    print("="*50)
+    print("Keypoint Model API: http://localhost:4500/v1/models/keypoint_model")
+    print("Emotion Model API: http://localhost:4000/v1/models/emotion_model")
+    
+else:
+    print("\n" + "="*50)
+    print("ALTERNATIVE DEPLOYMENT - SAVING MODELS ONLY")
+    print("="*50)
+    
+    # Save models in SavedModel format for manual deployment
+    keypoint_dir = deploy(os.path.join(MODEL_OUTPUT_DIR, 'keypoint_savedmodel'), model_1_facialKeyPoints)
+    emotion_dir = deploy(os.path.join(MODEL_OUTPUT_DIR, 'emotion_savedmodel'), model_2_emo)
+    
+    print(f"Models saved to:")
+    print(f"Keypoint model: {keypoint_dir}")
+    print(f"Emotion model: {emotion_dir}")
+    print("\nTo deploy with TensorFlow Serving later, use:")
+    print(f"tensorflow_model_server --rest_api_port=4500 --model_name=keypoint_model --model_base_path={keypoint_dir}")
+    print(f"tensorflow_model_server --rest_api_port=4000 --model_name=emotion_model --model_base_path={emotion_dir}")
+
+
+data = json.dumps({"signature_name": "serving_default", "instances": X_test[0:3].tolist()})
+print('Data: {} ... {}'.format(data[:50], data[len(data)-52:]))
+
+# Function to make predictions from deployed models
+def response(data):
+    headers = {"content-type": "application/json"}
+    
+    # Get keypoint predictions
+    json_response = requests.post('http://localhost:4500/v1/models/keypoint_model/versions/1:predict', data=data, headers=headers, verify=False)
+    df_predict = json.loads(json_response.text)['predictions']
+    
+    # Convert data for ResNet50 emotion model (needs RGB 224x224 images)
+    instances = json.loads(data)['instances']
+    instances_array = np.array(instances)
+    
+    # Convert to RGB and resize for ResNet50
+    instances_rgb = np.repeat(instances_array, 3, axis=-1)
+    instances_resized = np.zeros((len(instances), 224, 224, 3), dtype=np.float32)
+    for i in range(len(instances)):
+        instances_resized[i] = cv2.resize(instances_rgb[i], (224, 224))
+    
+    # Prepare data for ResNet50 emotion model
+    resnet_data = json.dumps({"signature_name": "serving_default", "instances": instances_resized.tolist()})
+    
+    # Get emotion predictions
+    json_response = requests.post('http://localhost:4000/v1/models/emotion_model/versions/1:predict', data=resnet_data, headers=headers, verify=False)
+    df_emotion = np.argmax(json.loads(json_response.text)['predictions'], axis=1)
+    
+    # Reshaping array from (n,) to (n,1)
+    df_emotion = np.expand_dims(df_emotion, axis=1)
+
+    # Converting the predictions into a dataframe
+    df_predict = pd.DataFrame(df_predict, columns=columns)
+
+    # Adding emotion into the predicted dataframe
+    df_predict['emotion'] = df_emotion
+
+    return df_predict
+
+# Update data preparation for ResNet50
+X_test_sample_rgb = np.repeat(X_test[0:3], 3, axis=-1)
+X_test_sample_resized = np.zeros((3, 224, 224, 3), dtype=np.float32)
+for i in range(3):
+    X_test_sample_resized[i] = cv2.resize(X_test_sample_rgb[i], (224, 224))
+
+data = json.dumps({"signature_name": "serving_default", "instances": X_test[0:3].tolist()})
+print('Data: {} ... {}'.format(data[:50], data[len(data)-52:]))
+
+df_predict = response(data)
+
+# Plotting the test images and their predicted keypoints and emotions
+fig, axes = plt.subplots(3, 1, figsize = (24, 24))
+axes = axes.ravel()
+
+for i in range(3):
+    axes[i].imshow(X_test[i].squeeze(),cmap='gray')
+    axes[i].set_title('ResNet50 Prediction = {}'.format(label_to_txt[df_predict['emotion'][i]]))
+    axes[i].axis('off')
+    for j in range(1,31,2):
+            axes[i].plot(df_predict.loc[i][j-1], df_predict.loc[i][j], 'rx')
+
+    """
